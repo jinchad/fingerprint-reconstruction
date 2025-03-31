@@ -15,21 +15,21 @@ class DataPipeline:
         self.imploding_whorl_model = YOLOFingerPatternDetection(imploding_whorl_model)
         self.standard_arch_model = YOLOFingerPatternDetection(standard_arch_model)
         self.loop_model = YOLOFingerPatternDetection(loop_model)
-
-        self.img_count = 0
-
     
-    def generate_images(self, image_dir:str, num_count: int = 1):
+    def generate_blurred_images(self, image_input_dir:str, image_output_dir: str, num_count: int = 1, ):
         valid_image_formats = (".tif", ".png", ".jpg")
         images = []
         failed_images = []
-
-        for image_name in os.listdir(image_dir):
-            if image_name.lower().endswith(valid_image_formats):
-                images.append(image_name)
-
+        if os.path.isdir(image_input_dir):
+            for image_name in os.listdir(image_input_dir):
+                if image_name.lower().endswith(valid_image_formats):
+                    images.append(image_name)
+        elif os.path.isfile(image_input_dir):
+            images.append(os.path.basename(image_input_dir))
+            image_input_dir = os.path.abspath(os.path.join(image_input_dir, ".."))
         for image_name in images:
-            img_dir = f"{image_dir}/{image_name}"
+            img_dir = f"{image_input_dir}/{image_name}"
+            
             result = self.classification_model.predict(img_dir, save=False)
 
             # storing labels for the fingerprint patterns i.e. concentric whorl etc
@@ -52,20 +52,29 @@ class DataPipeline:
             else:
                 match label:
                     case "standard_arch":
-                        self.predict_bounding_box(model = self.standard_arch_model, img_dir=img_dir, label = label, num_count = num_count)
-                        
+                        bounding_box = self.predict_bounding_box(model = self.standard_arch_model, img_dir=img_dir)
                     case "concentric_whorl":
-                        pass
+                        bounding_box = self.predict_bounding_box(model = self.concentric_whorl_model, img_dir=img_dir)
                     case "imploding_whorl":
-                        pass
+                        bounding_box = self.predict_bounding_box(model = self.imploding_whorl_model, img_dir=img_dir)
                     case "loop":
-                        pass
+                        bounding_box = self.predict_bounding_box(model = self.loop_model, img_dir=img_dir, label = label)
                     case _:
                         print("Unknown finger pattern type. Labeller models will need to be updated.")
+                        continue
+                x1, y1, x2, y2 = bounding_box
+                count = 0
+                for _ in range(num_count):
+                    count += 1
+                    lr_radius = random.choice(range(int(1/3*(x2-x1)), int(3/5*(x2-x1)),int(1/10*(x2-x1))))
+                    ud_radius = random.choice(range(int(1/3*(y2-y1)), int(3/5*(y2-y1)),int(1/10*(y2-y1))))
+                    masked_blur = self.blur_image(img_dir=img_dir, target_box=bounding_box, axes = (lr_radius,ud_radius))
+                    filename = f"{image_name}_{count}_blurred_{int(time.time())}"
+                    cv2.imwrite(f'{image_output_dir}/{filename}.jpg', masked_blur)
 
         return failed_images
         
-    def predict_bounding_box(self, model: YOLOFingerPatternDetection, img_dir: str, label: str, num_count: int = 1, mask_size: float = 3/5):
+    def predict_bounding_box(self, model: YOLOFingerPatternDetection, img_dir: str):
         try:
             result = model.predict(img_dir, save = False)
             pred_conf = result[0].boxes.conf.tolist()
@@ -77,20 +86,18 @@ class DataPipeline:
                 # [x1, y1, x2, y2]
                 bounding_boxes = result[0].boxes.xyxy.tolist()
                 target_box = bounding_boxes[target_idx]
-                x1, y1, x2, y2 = target_box
 
                 print(f"{highest_conf} - {target_box}")
-                for _ in range(num_count):
-                    lr_radius = random.choice(range(int(1/3*(x2-x1)), int(3/5*(x2-x1)),int(1/10*(x2-x1))))
-                    ud_radius = random.choice(range(int(1/3*(y2-y1)), int(3/5*(y2-y1)),int(1/10*(y2-y1))))
-                    self.blur_image(img_dir=img_dir, target_box=target_box, axes = (lr_radius,ud_radius), label = label)
+                
+                return target_box
             else:
                 print(f"Bounding box confidence is {highest_conf}, which does not meet the minimum threshold level.")
+                return None
         except Exception as e:
             print(f"Following error occurred while predicting bounding box: {e}")
+            return None
 
-    def blur_image(self, img_dir: str, target_box: list[float], axes: tuple[int], label: str):
-        self.img_count += 1
+    def blur_image(self, img_dir: str, target_box: list[float], axes: tuple[int]):
         image = cv2.imread(img_dir)
 
         x1,y1,x2,y2 = target_box
@@ -109,9 +116,7 @@ class DataPipeline:
 
         masked_blur = np.where(mask[:, :, None] == 255, blurred, image)
 
-        filename = f"blurred_{label}_{self.img_count}_{int(time.time())}"
-
-        cv2.imwrite(f'{filename}.jpg', masked_blur)
+        return masked_blur
 
 
 if __name__ == "__main__":
@@ -123,5 +128,5 @@ if __name__ == "__main__":
         standard_arch_model="Fingerprint Classifier/models/labeller/standard_arch_detection.pt"
     )
 
-    pipeline.generate_images("Fingerprint Classifier/test_images/arch", num_count=4)
+    pipeline.generate_blurred_images(image_input_dir="/Users/jin/Documents/GitHub/AI-Project/Fingerprint Classifier/test_images/imploding whorl/imploding_whorl_1.png", image_output_dir="blurred_images", num_count=4)
 
