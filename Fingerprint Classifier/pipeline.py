@@ -4,6 +4,7 @@ import cv2
 import numpy as np
 import random
 import time
+import math
 
 CLASSIFICATION_THRESHOLD = 0.5
 DETECTION_THRESHOLD = 0.25
@@ -27,6 +28,10 @@ class DataPipeline:
         elif os.path.isfile(image_input_dir):
             images.append(os.path.basename(image_input_dir))
             image_input_dir = os.path.abspath(os.path.join(image_input_dir, ".."))
+        
+        if not os.path.exists(image_output_dir):
+            os.makedirs(image_output_dir)
+
         for image_name in images:
             img_dir = f"{image_input_dir}/{image_name}"
             
@@ -63,12 +68,16 @@ class DataPipeline:
                         print("Unknown finger pattern type. Labeller models will need to be updated.")
                         continue
                 x1, y1, x2, y2 = bounding_box
+                bounding_box_area = (x2-x1)*(y2-y1)
+                blur_mask_area = 2/5*bounding_box_area
+                radius = math.sqrt(blur_mask_area/math.pi)
+
                 count = 0
                 for _ in range(num_count):
                     count += 1
-                    lr_radius = random.choice(range(int(1/3*(x2-x1)), int(3/5*(x2-x1)),int(1/10*(x2-x1))))
-                    ud_radius = random.choice(range(int(1/3*(y2-y1)), int(3/5*(y2-y1)),int(1/10*(y2-y1))))
-                    masked_blur = self.blur_image(img_dir=img_dir, target_box=bounding_box, axes = (lr_radius,ud_radius))
+                    lr_axes = random.choice(range(int(radius*0.75), int(radius*1.25)))
+                    ud_axes = int(blur_mask_area/math.pi/lr_axes)
+                    masked_blur = self.blur_image(img_dir=img_dir, target_box=bounding_box, axes = (lr_axes,ud_axes))
                     filename = f"{image_name}_{count}_blurred_{int(time.time())}"
                     cv2.imwrite(f'{image_output_dir}/{filename}.jpg', masked_blur)
 
@@ -101,12 +110,12 @@ class DataPipeline:
         image = cv2.imread(img_dir)
 
         x1,y1,x2,y2 = target_box
-        lr_radius, ud_radius = axes
+        lr_axes, ud_axes = axes
 
         mask = np.zeros(image.shape[:2], dtype=np.uint8)
 
-        centerx = int(random.uniform(x1+lr_radius//2, x2-lr_radius//2))
-        centery = int(random.uniform(y1+ud_radius//2, y2-ud_radius//2))
+        centerx = int(random.uniform(x1+lr_axes//2, x2-lr_axes//2))
+        centery = int(random.uniform(y1+ud_axes//2, y2-ud_axes//2))
 
         center = (centerx, centery)  # center of image
 
@@ -127,6 +136,6 @@ if __name__ == "__main__":
         loop_model="Fingerprint Classifier/models/labeller/loop_detection.pt",
         standard_arch_model="Fingerprint Classifier/models/labeller/standard_arch_detection.pt"
     )
-
-    pipeline.generate_blurred_images(image_input_dir="/Users/jin/Documents/GitHub/AI-Project/Fingerprint Classifier/test_images/imploding whorl/imploding_whorl_1.png", image_output_dir="blurred_images", num_count=4)
+    curr_dir = os.getcwd()
+    pipeline.generate_blurred_images(image_input_dir=f"{curr_dir}/Fingerprint Classifier/test_images/arch", image_output_dir=f"{curr_dir}/blurred_images", num_count=4)
 
