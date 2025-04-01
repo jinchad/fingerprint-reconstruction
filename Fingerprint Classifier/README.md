@@ -19,7 +19,11 @@ pip install -U ultralytics
 pip install -r "Fingerprint Classifier/requirements.txt"
 ```
 
-## Step 2: Running the pipeline to generate blurred images
+## Step 2: Add .env
+Edit .env.example to include your private API key from roboflow
+Rename .env.example to .env
+
+## Step 3: Running the pipeline to generate blurred images
 1. Consider the following code snipper on how to use`pipeline.py`. Ensure that you have the necessary classifier and labeller models in `Fingerprint Classifier/models`.
 
 ```python
