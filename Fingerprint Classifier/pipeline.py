@@ -129,7 +129,11 @@ class DataPipeline:
 
         masked_blur = np.where(mask[:, :, None] == 255, blurred, image)
 
-        return masked_blur
+        result = image.copy()
+
+        result[mask == 255] = [0, 255, 0]
+
+        return result
     
     @staticmethod
     def find_best_pts(n: int, x1, x2, y1, y2):
