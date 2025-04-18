@@ -5,10 +5,14 @@ import numpy as np
 import random
 import time
 import math
-from typing import Union
+from typing import Union, List
+from blob_masks import blob_mask
+from PIL import Image
+from numpy.typing import NDArray
 
 CLASSIFICATION_THRESHOLD = 0.5
-DETECTION_THRESHOLD = 0.25
+DETECTION_THRESHOLD = 0.25 
+NOISE_THRESHOLD = 127.5 #set between 120 and 135. Higher leads to less noise and vice versa
 
 class DataPipeline:
     def __init__(self, classification_model: str, concentric_whorl_model: str, imploding_whorl_model: str, standard_arch_model: str, loop_model:str):
@@ -18,7 +22,7 @@ class DataPipeline:
         self.standard_arch_model = YOLOFingerPatternDetection(standard_arch_model)
         self.loop_model = YOLOFingerPatternDetection(loop_model)
     
-    def generate_blurred_images(self, image_input_dir:str, image_output_dir: str, num_count: int = 1, ):
+    def generate_blurred_images(self, image_input_dir:str, image_output_dir: str, num_count: int = 1, noise: bool = True):
         valid_image_formats = (".tif", ".png", ".jpg")
         images = []
         failed_images = []
@@ -67,35 +71,48 @@ class DataPipeline:
                     case "imploding_whorl":
                         bounding_box = self.predict_bounding_box(model = self.imploding_whorl_model, img_dir=img_dir)
                     case "loop":
-                        bounding_box = self.predict_bounding_box(model = self.loop_model, img_dir=img_dir, label = label)
+                        bounding_box = self.predict_bounding_box(model = self.loop_model, img_dir=img_dir)
                     case _:
                         print("Unknown finger pattern type. Labeller models will need to be updated.")
                         continue
-                x1, y1, x2, y2 = bounding_box
-                bounding_box_area = (x2-x1)*(y2-y1)
-                blur_mask_area = 0.5*bounding_box_area
-                radius = math.sqrt(blur_mask_area/math.pi)
-                coordinates = DataPipeline.find_best_pts(num_count, x1, x2, y1, y2)
-
+                
                 count = 0
+                x1, y1, x2, y2 = bounding_box
+                bounding_box_width = int(abs(x2-x1))
+                bounding_box_height = int(abs(y2-y1))
 
-                for idx in range(num_count):
-                    count += 1
-                    coor = tuple(map(lambda x: int(x), coordinates[idx]))
+                if noise:
+                    max_box_size = max(bounding_box_height, bounding_box_width)
+                    for idx in range(num_count):
+                        count += 1
+                        masked_blur = self.blur_image_with_noise(img_dir=img_dir, box_size = max_box_size)
+                        filename = f"{image_name}_{count}_blurred_{int(time.time())}"
+                        cv2.imwrite(f'{image_output_dir}/{filename}.jpg', masked_blur)
+                
+                else:
+                    bounding_box_area = (x2-x1)*(y2-y1)
+                    blur_mask_area = 0.5*bounding_box_area
+                    radius = math.sqrt(blur_mask_area/math.pi)
+                    coordinates = DataPipeline.find_best_pts(num_count, x1, x2, y1, y2)
 
-                    # left-right radius of the ellipse
-                    lr_axes = random.choice(range(int(radius*0.75), int(radius*1.25)))
+                    for idx in range(num_count):
+                        count += 1
+                        coor = tuple(map(lambda x: int(x), coordinates[idx]))
 
-                    # up-down radius of the ellipse
-                    ud_axes = int(blur_mask_area/math.pi/lr_axes)
+                        # left-right radius of the ellipse
+                        lr_axes = random.choice(range(int(radius*0.75), int(radius*1.25)))
 
-                    masked_blur = self.blur_image(img_dir=img_dir, axes = (lr_axes,ud_axes), centre = coor)
+                        # up-down radius of the ellipse
+                        ud_axes = int(blur_mask_area/math.pi/lr_axes)
+
+                        masked_blur = self.blur_image(img_dir=img_dir, axes = (lr_axes,ud_axes), centre = coor)
+
                     filename = f"{image_name}_{count}_blurred_{int(time.time())}"
                     cv2.imwrite(f'{image_output_dir}/{filename}.jpg', masked_blur)
 
         return failed_images
         
-    def predict_bounding_box(self, model: YOLOFingerPatternDetection, img_dir: str):
+    def predict_bounding_box(self, model: YOLOFingerPatternDetection, img_dir: str) -> List[float]:
         try:
             result = model.predict(img_dir, save = False)
             pred_conf = result[0].boxes.conf.tolist()
@@ -125,15 +142,69 @@ class DataPipeline:
 
         cv2.ellipse(mask, center = centre, axes = axes, angle=0, startAngle=0, endAngle=360, color=255, thickness=-1)
 
-        blurred = cv2.GaussianBlur(image, (15, 15), 0)
-
-        masked_blur = np.where(mask[:, :, None] == 255, blurred, image)
-
         result = image.copy()
 
         result[mask == 255] = [0, 255, 0]
 
         return result
+    
+    def blur_image_with_noise(self, img_dir: str, box_size: int):
+        image = cv2.imread(img_dir)
+        height, width = image.shape[:2]
+
+        def generate_ridge_like_texture(mask: Image, seed=None):
+            mask_array = np.array(mask.convert('L'))
+            width, height = mask.size
+            rng = np.random.default_rng(seed)
+            noise = rng.normal(loc=127, scale=50, size=(height, width)).astype(np.uint8)
+            noise_blur = cv2.GaussianBlur(noise, (7, 7), sigmaX=1.5)
+            new_blur = find_edge(mask_array, noise_blur)
+            return new_blur
+
+        def find_edge(mask: NDArray, noise_blur_array = None):
+            mask_width, mask_height = mask.shape
+            for row_idx in range(mask_height):
+                row = mask[row_idx]
+                idx = 0
+                while idx < mask_width:
+                    num = row[idx]
+                    if num != 0:
+                        start_idx = idx
+                        end_num = row[idx]
+                        while end_num != 0:
+                            end_num = row[idx]
+                            idx += 1
+                        end_idx = idx
+                        noise_mask_row = noise_blur_array[row_idx]
+                        noise_mask_row[:start_idx+1] = 0
+                        noise_mask_row[end_idx:] = 0
+                        noise_mask_row[start_idx:end_idx] = np.where(noise_mask_row[start_idx:end_idx] >= NOISE_THRESHOLD, 255, 0).astype(np.uint8)
+                        noise_blur_array[row_idx] = noise_mask_row
+                        break
+                    idx += 1
+                if noise_blur_array[row_idx][0] != 0 and noise_blur_array[row_idx][-1] != 0:
+                    noise_blur_array[row_idx] = 0
+            
+            return noise_blur_array
+
+        blob = blob_mask(size=box_size)  # PIL image
+        ridge_texture = generate_ridge_like_texture(blob)
+
+        new_mask = np.zeros((height, width))
+        mask_h, mask_w = ridge_texture.shape    
+
+        start_y = (height - mask_h) // 2
+        start_x = (width - mask_w) // 2
+        new_mask[start_y:start_y + mask_h, start_x:start_x + mask_w] = ridge_texture
+
+        green_tinted = np.zeros((height, width, 3), dtype=np.float32)
+        green_tinted[..., 1] = new_mask.astype(np.float32)  # only green channel gets the texture
+
+        image_float = image.astype(np.float32)
+        alpha_mask = new_mask.astype(np.float32) / 255.0
+        blended = (green_tinted * alpha_mask[..., None] + image_float * (1 - alpha_mask[..., None])).astype(np.uint8)
+
+        return blended
     
     @staticmethod
     def find_best_pts(n: int, x1, x2, y1, y2):
@@ -209,5 +280,7 @@ if __name__ == "__main__":
         standard_arch_model="Fingerprint Classifier/models/labeller/standard_arch_detection.pt"
     )
     curr_dir = os.getcwd()
-    pipeline.generate_blurred_images(image_input_dir=f"{curr_dir}/Fingerprint Classifier/test_images/imploding whorl", image_output_dir=f"{curr_dir}/blurred_images", num_count=5)
+    pipeline.generate_blurred_images(image_input_dir=f"{curr_dir}/Fingerprint Classifier/test_images/loop", image_output_dir=f"{curr_dir}/blurred_images", num_count=5)
     
+
+
