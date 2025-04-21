@@ -22,7 +22,7 @@ class DataPipeline:
         self.standard_arch_model = YOLOFingerPatternDetection(standard_arch_model)
         self.loop_model = YOLOFingerPatternDetection(loop_model)
     
-    def generate_blurred_images(self, image_input_dir:str, image_output_dir: str, num_count: int = 1, noise: bool = True):
+    def generate_masked_images(self, image_input_dir:str, image_output_dir: str, image_count: int = 1, noise: bool = True, multiple_blob: bool = False):
         valid_image_formats = (".tif", ".png", ".jpg")
         images = []
         failed_images = []
@@ -83,9 +83,9 @@ class DataPipeline:
 
                 if noise:
                     max_box_size = max(bounding_box_height, bounding_box_width)
-                    for idx in range(num_count):
+                    for idx in range(image_count):
                         count += 1
-                        masked_blur = self.blur_image_with_noise(img_dir=img_dir, box_size = max_box_size)
+                        masked_blur = self.mask_image_with_noise(img_dir=img_dir, box_size = max_box_size)
                         filename = f"{image_name}_{count}_blurred_{int(time.time())}"
                         cv2.imwrite(f'{image_output_dir}/{filename}.jpg', masked_blur)
                 
@@ -93,9 +93,9 @@ class DataPipeline:
                     bounding_box_area = (x2-x1)*(y2-y1)
                     blur_mask_area = 0.5*bounding_box_area
                     radius = math.sqrt(blur_mask_area/math.pi)
-                    coordinates = DataPipeline.find_best_pts(num_count, x1, x2, y1, y2)
+                    coordinates = DataPipeline.find_best_pts(image_count, x1, x2, y1, y2)
 
-                    for idx in range(num_count):
+                    for idx in range(image_count):
                         count += 1
                         coor = tuple(map(lambda x: int(x), coordinates[idx]))
 
@@ -105,10 +105,15 @@ class DataPipeline:
                         # up-down radius of the ellipse
                         ud_axes = int(blur_mask_area/math.pi/lr_axes)
 
-                        masked_blur = self.blur_image(img_dir=img_dir, axes = (lr_axes,ud_axes), centre = coor)
+                        if multiple_blob:
+                            masked_blur = self.mask_image_with_multiple_blobs(img_dir=img_dir, centre = coor)
+                            
+                        else:
+                            masked_blur = self.mask_image(img_dir=img_dir, axes = (lr_axes,ud_axes), centre = coor)
 
-                    filename = f"{image_name}_{count}_blurred_{int(time.time())}"
-                    cv2.imwrite(f'{image_output_dir}/{filename}.jpg', masked_blur)
+
+                        filename = f"{image_name}_{count}_blurred_{int(time.time())}"
+                        cv2.imwrite(f'{image_output_dir}/{filename}.jpg', masked_blur)
 
         return failed_images
         
@@ -135,7 +140,7 @@ class DataPipeline:
             print(f"Following error occurred while predicting bounding box: {e}")
             return None
 
-    def blur_image(self, img_dir: str, axes: tuple[int, int], centre: tuple[int, int]):
+    def mask_image(self, img_dir: str, axes: tuple[int, int], centre: tuple[int, int]):
         image = cv2.imread(img_dir)
 
         mask = np.zeros(image.shape[:2], dtype=np.uint8)
@@ -148,7 +153,76 @@ class DataPipeline:
 
         return result
     
-    def blur_image_with_noise(self, img_dir: str, box_size: int):
+    def mask_image_with_multiple_blobs(self, img_dir: str, centre: tuple[int]):
+        """
+        Draw 1 central ellipse + 2–3 surrounding non‑overlapping ellipses,
+        all inside the image, together ≈10% of the image area,
+        each ellipse’s area within ±5% of the others.
+        """
+        img = cv2.imread(img_dir)
+        image_height, image_width = img.shape[:2]
+        image_output = img.copy()
+        occupied = np.zeros((image_height, image_width), dtype=np.uint8)
+        cx, cy   = centre
+
+        # total mask area = 10% of image
+        total_area = 0.1 * image_height * image_width
+        # decide extras: 2–3 surrounding → total 3–7
+        extras = random.randint(2, 6)
+        count = extras + 1
+        base_area = total_area / count
+
+        def compute_axes(area):
+            # jitter ±10%
+            area *= random.uniform(0.90, 1.1)
+            # random aspect ratio 0.5–2.0
+            ar = random.uniform(0.5, 2.0)
+            # solve π·lr·ud = area ⇒ lr·ud = area/π
+            b  = math.sqrt((area / math.pi) / ar)
+            lr = max(2, int(b * ar))
+            ud = max(2, int(b))
+            return lr, ud
+
+        def place(center, axes, angle):
+            tmp = np.zeros_like(occupied)
+            cv2.ellipse(tmp, (int(center[0]), int(center[1])),
+                        axes, angle, 0, 360, 255, -1)
+            x, y = center
+            lr, ud = axes
+            # fully inside?
+            if x - lr < 0 or x + lr >= image_width or y - ud < 0 or y + ud >= image_height:
+                return False
+            # no overlap?
+            if cv2.countNonZero(tmp & occupied) > 0:
+                return False
+            occupied[:] |= tmp
+            image_output[tmp == 255] = [0, 255, 0]
+            return True
+
+        # 1) central ellipse
+        lr0, ud0 = compute_axes(base_area)
+        ang0 = random.uniform(0, 360)
+        print(cx, cy, centre)
+        place((cx, cy), (lr0, ud0), ang0)
+
+        # 2) surrounding ones
+        placed = 1
+        tries = 0
+        cluster_rad = math.hypot(lr0, ud0) * 2
+        while placed < count and tries < 200:
+            tries += 1
+            theta = random.uniform(0, 2*math.pi)
+            dist = random.uniform(cluster_rad * 0.3, cluster_rad)
+            ex = int(cx + dist * math.cos(theta))
+            ey = int(cy + dist * math.sin(theta))
+            lr, ud = compute_axes(base_area)
+            ang = random.uniform(0, 360)
+            if place((ex, ey), (lr, ud), ang):
+                placed += 1
+
+        return image_output
+    
+    def mask_image_with_noise(self, img_dir: str, box_size: int):
         image = cv2.imread(img_dir)
         height, width = image.shape[:2]
 
@@ -280,7 +354,12 @@ if __name__ == "__main__":
         standard_arch_model="Fingerprint Classifier/models/labeller/standard_arch_detection.pt"
     )
     curr_dir = os.getcwd()
-    pipeline.generate_blurred_images(image_input_dir=f"{curr_dir}/Fingerprint Classifier/test_images/loop", image_output_dir=f"{curr_dir}/blurred_images", num_count=5)
+    pipeline.generate_masked_images(image_input_dir=f"/Users/jin/Documents/GitHub/AI-Project/Fingerprint Classifier/test_images/imploding whorl/imploding_whorl_1.png", 
+                                     image_output_dir=f"{curr_dir}/blurred_images", 
+                                     noise=True,
+                                     image_count=5, 
+                                     multiple_blob= False
+                                     )
     
 
 
