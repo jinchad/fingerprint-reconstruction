@@ -44,6 +44,7 @@ class YOLOFingerClassification(YOLOModel):
     
     def load_dataset(self, version_num: int, dataset_dir: str) -> None:
         if not os.path.exists(dataset_dir):
+            print("Downloading the dataset")
             rf = RoboflowDataset(rf_project=self.project_name, rf_dataset_ver= version_num)
             dataset_download_dir = os.path.abspath(os.path.join(dataset_dir, ".."))
             rf.download_dataset(export_type="folder", dataset_dir=dataset_download_dir)
@@ -86,7 +87,10 @@ class YOLOFingerPatternDetection(YOLOModel):
 
 
 if __name__ == "__main__":
-    y = YOLOFingerPatternDetection("yolov8n.pt")
-    fingerprint_pattern = "concentric_whorl"
-    version_num = 6
-    y.train(dataset_dir=f"/Users/jin/Documents/GitHub/datasets/fingerprint-pattern-detection-vmh4p/v{version_num}/{fingerprint_pattern}_dataset_v{version_num}/data.yaml", version_num=version_num, pattern = fingerprint_pattern)
+    # y = YOLOFingerPatternDetection("yolov8n.pt")
+    # fingerprint_pattern = "concentric_whorl"
+    # version_num = 6
+    # y.train(dataset_dir=f"/Users/jin/Documents/GitHub/datasets/fingerprint-pattern-detection-vmh4p/v{version_num}/{fingerprint_pattern}_dataset_v{version_num}/data.yaml", version_num=version_num, pattern = fingerprint_pattern)
+
+    y = YOLOFingerPatternDetection("Fingerprint Classifier/models/classifier/fingerprint_classifier.pt")
+    y.predict("/Users/jin/Documents/GitHub/AI-Project/Fingerprint Classifier/test_images/imploding whorl/imploding_whorl_1.png")
